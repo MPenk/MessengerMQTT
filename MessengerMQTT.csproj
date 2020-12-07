@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <NoWin32Manifest>true</NoWin32Manifest>
+    <ApplicationIcon>logo.ico</ApplicationIcon>
+    <StartupObject>MessengerMQTT.App</StartupObject>
+    <AssemblyName>MessengerMQTTbyPENK</AssemblyName>
+    <Version>0.12</Version>
+    <Authors>Michał Penk</Authors>
+    <Company>Penk.eu</Company>
+    <PackageIcon>logo.png</PackageIcon>
+    <NeutralLanguage>pl-PL</NeutralLanguage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="M2MqttDotnetCore" Version="1.1.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="12.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="img\logo.png">
+      <Pack>True</Pack>
+      <PackagePath></PackagePath>
+    </None>
+  </ItemGroup>
+
+</Project>
