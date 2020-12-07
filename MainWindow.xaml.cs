@@ -31,7 +31,6 @@ namespace MessengerMQTT
         static List<Border> listBorder = new List<Border>();
         bool newSession = true;
         CancellationTokenSource cts = new CancellationTokenSource();
-        string payloadLast = "";
         bool haveTypingMessage = false;
         MqttClient client;
         public MainWindow()
@@ -47,34 +46,48 @@ namespace MessengerMQTT
             Console.WriteLine(listRows.Count);
             MainWindow.listRows.Add(new RowDefinition());
             Console.WriteLine(listRows.Count);
-
-                _ = MQTT();
+            this.newSession = false;
+            _ = MQTT();
 
         }
 
         private async Task MQTT()
         {
+            newSession = false;
             IPAddress ipAddress;
             if (!IPAddress.TryParse(Configuration.ip, out ipAddress))
                 ipAddress = Dns.GetHostEntry(Configuration.ip).AddressList[0];
+           try
+            {
+                client = new MqttClient(ipAddress, getPort(Configuration.ip), false, null, null, MqttSslProtocols.None);
+                client.MqttMsgPublishReceived += client_MqttMsgPublishReceived;
 
-            client = new MqttClient(ipAddress);
-            client.MqttMsgPublishReceived += client_MqttMsgPublishReceived;
-
-
-            string clientId = Configuration.myName;
-            if (chkboxLogin.IsChecked == true)
-                client.Connect(clientId,Configuration.clientId,Configuration.clientPass);
-            else
-            client.Connect(clientId);
-
-            client.Subscribe(new string[] { Configuration.topic.ToString() }, new byte[] { MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE });
+                string clientId = Configuration.myName;
+                try
+                {
+                    if (chkboxLogin.IsChecked == true)
+                        client.Connect(clientId, Configuration.clientId, Configuration.clientPass);
+                    else
+                        client.Connect(clientId);
+                }
+                catch (Exception x)
+                {
+                    MessageBox.Show(x.Message);
+                    return;
+                    throw;
+                }
+                client.Subscribe(new string[] { Configuration.topic.ToString() }, new byte[] { MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE });
+            }
+            catch (Exception x)
+            {
+          
+                return;
+            }
         }
         void client_MqttMsgPublishReceived(object sender, MqttMsgPublishEventArgs e)
         {
             if (this.newSession == true) {
                 this.newSession = false;
-                return; 
             }
             string payload = Encoding.UTF8.GetString(e.Message);
             string typeMsg = payload.Substring(0, 3);
@@ -94,8 +107,6 @@ namespace MessengerMQTT
             }
             else if (typeMsg == "msg")
             {
-                if (payload != payloadLast)
-                {
                     var deserializedMsg = JsonConvert.DeserializeObject<Msg>(payload);
 
                     taskCancle();
@@ -105,9 +116,6 @@ namespace MessengerMQTT
                         this.addMessageToGrid(new Message(deserializedMsg.data, deserializedMsg.topic, deserializedMsg.myName));
                         scrollViewer.ScrollToEnd();
                     });
-                    payloadLast = payload;
-                }
-                
             }
 
         }
@@ -217,10 +225,7 @@ namespace MessengerMQTT
 
         private void tbxNick_TextChanged(object sender, TextChangedEventArgs e)
         {
-            if (tbxNick.Text.Trim() != "")
-            {
-                Configuration.myName = tbxNick.Text.Trim();
-            }
+
         }
 
         private void tbxLogin_TextChanged(object sender, TextChangedEventArgs e)
@@ -241,15 +246,6 @@ namespace MessengerMQTT
             }
         }
 
-        private void tbxTopic_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            if (tbxTopic.Text.Trim() != "")
-            {
-                Configuration.topicLast = Configuration.topic;
-                Configuration.topic = tbxTopic.Text.Trim();
-                _ = resubscribeAsync();
-            }
-        }
 
         private void chkboxSound_Checked(object sender, RoutedEventArgs e)
         {
@@ -262,21 +258,28 @@ namespace MessengerMQTT
 
         private async Task resubscribeAsync()
         {
+            var a = newSession;
             if (this.newSession == false)
             {
                 try
                 {
-                    this.newSession = true;
                     Console.WriteLine("### DISCONNECT ###");
                     client.Unsubscribe(new string[] { Configuration.topicLast });
-                    client = null;
+                    client.Disconnect();
                     Console.WriteLine("### UNSUBSCRIBED ###");
-                    await MQTT();
 
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    MessageBox.Show(ex.Message);
+                }
+                try
+                {
+                    this.newSession = true;
+                    await MQTT();
+                }
+                catch (Exception)
+                {
+
                     throw;
                 }
             }
@@ -285,7 +288,6 @@ namespace MessengerMQTT
 
         private void btnRConn_Click(object sender, RoutedEventArgs e)
         {
-
             _ = resubscribeAsync();
         }
 
@@ -337,7 +339,11 @@ namespace MessengerMQTT
         private async Task sendMsg(string msg)
         {
             string strValue = Convert.ToString(msg);
-            client.Publish(Configuration.topic, Encoding.UTF8.GetBytes(strValue));
+            if (client.IsConnected)
+            {
+                client.Publish(Configuration.topic, Encoding.UTF8.GetBytes(strValue));
+            }
+            
         }
         public void addMessageToGrid(Message message)
         {
@@ -465,10 +471,67 @@ namespace MessengerMQTT
 
 
         }
+        private int getPort(string ip) {
+            for (int i = 0; i < ip.Length; i++)
+            {
+                if (ip[i] == ':')
+                {
+                    int port = 1883;
+                    int.TryParse(ip.Substring(i+1), out port);
+                    return port;
+                }
 
+            }
+
+            return 1883;
+        }
+        private string getIp(string ip)
+        {
+            for (int i = 0; i < ip.Length; i++)
+            {
+                if (ip[i] == ':')
+                {
+                    string IP = Configuration.ip;
+                    IP = ip.Substring(0, i);
+                    return IP;
+                }
+
+            }
+
+            return Configuration.ip;
+        }
         private void WindowMain_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             Environment.Exit(-1);
+        }
+
+        private void tbxIp_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (tbxIp.Text.Trim() != "")
+            {
+
+                Configuration.ip = tbxIp.Text.Trim();
+                _ = resubscribeAsync();
+
+            }
+        }
+
+        private void tbxNick_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (tbxNick.Text.Trim() != "")
+            {
+                Configuration.myName = tbxNick.Text.Trim();
+            }
+        }
+
+        private void tbxTopic_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (tbxTopic.Text.Trim() != "")
+            {
+                Configuration.topicLast = Configuration.topic;
+                Configuration.topic = tbxTopic.Text.Trim();
+                _ = resubscribeAsync();
+            }
         }
     }
 }
