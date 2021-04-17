@@ -8,7 +8,7 @@
     <ApplicationIcon>logo.ico</ApplicationIcon>
     <StartupObject>MessengerMQTT.App</StartupObject>
     <AssemblyName>MessengerMQTTbyPENK</AssemblyName>
-    <Version>0.12</Version>
+    <Version>0.21</Version>
     <Authors>Michał Penk</Authors>
     <Company>Penk.eu</Company>
     <PackageIcon>logo.png</PackageIcon>

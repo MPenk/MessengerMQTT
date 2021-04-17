@@ -12,8 +12,8 @@ namespace MessengerMQTT
         private int id { get; set; }
 
 
-        public Message(string data, string topic, string myName)
-        : base(data, topic, myName)
+        public Message(string data, string topic, string name, string uID)
+        : base("msg", data, topic, name, uID)
         {
             this.id = Message.getSize();
             Message.listMessages.Add(this);

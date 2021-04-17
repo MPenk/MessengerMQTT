@@ -27,12 +27,14 @@ namespace MessengerMQTT
     public partial class MainWindow : Window
     {
 
-        static List<RowDefinition> listRows = new List<RowDefinition>();
+        static List<RowDefinition> listRowsMessages = new List<RowDefinition>();
+        static List<RowDefinition> listRowsErrors = new List<RowDefinition>();
         static List<Border> listBorder = new List<Border>();
         bool newSession = true;
-        CancellationTokenSource cts = new CancellationTokenSource();
-        bool haveTypingMessage = false;
+        int[] typingGestAndMe = new int[2] { -10, -10 };
         MqttClient client;
+        CancellationTokenSource cts = new CancellationTokenSource();
+        CancellationTokenSource ctsMe = new CancellationTokenSource();
         public MainWindow()
         {
             Random rnd = new Random();
@@ -41,125 +43,172 @@ namespace MessengerMQTT
             Configuration.clientId = tbxLogin.Text;
             Configuration.clientPass = "ti123";
             Configuration.ip = tbxIp.Text;
-            Configuration.myName = tbxNick.Text;
+            var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789*/-!@#$%^&*";
+            var stringChars = new char[16];
+            var random = new Random();
+
+            for (int i = 0; i < stringChars.Length; i++)
+            {
+                stringChars[i] = chars[random.Next(chars.Length)];
+            }
+
+            Configuration.uID = new String(stringChars);
+            Configuration.name = tbxNick.Text;
             Configuration.sound = chkboxSound.IsChecked.Value;
-            Console.WriteLine(listRows.Count);
-            MainWindow.listRows.Add(new RowDefinition());
-            Console.WriteLine(listRows.Count);
+            Console.WriteLine(listRowsMessages.Count);
+            MainWindow.listRowsMessages.Add(new RowDefinition());
+            Console.WriteLine(listRowsMessages.Count);
             this.newSession = false;
-            _ = MQTT();
+            try
+            {
+                _ = MQTT(Configuration.ip, Configuration.uID, Configuration.topic);
+            }
+            catch (ExceptionConnection e)
+            {
+                showError("Problem z połączeniem z serwerem MQTT:\n     " + e.Message);
+            }
+            catch (Exception e)
+            {
+                showError("Nieznany błąd " + e.Message);
+            }
 
         }
-
-        private async Task MQTT()
+        /// <summary>
+        /// Connect with MQTT host.
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        /// <exception cref="ExceptionConnection">Thrown when something wrong with connection.</exception>
+        private async Task MQTT(string ip, string uID, string topic, bool? chkboxLoginIsChecked = false, string clientId = "", string clientPass = "")
         {
-            newSession = false;
             IPAddress ipAddress;
-            if (!IPAddress.TryParse(Configuration.ip, out ipAddress))
-                ipAddress = Dns.GetHostEntry(Configuration.ip).AddressList[0];
-           try
+            newSession = false;
+            try
             {
-                client = new MqttClient(ipAddress, getPort(Configuration.ip), false, null, null, MqttSslProtocols.None);
+                if (!IPAddress.TryParse(ip, out ipAddress))
+                    ipAddress = Dns.GetHostEntry(ip).AddressList[0];
+            }
+            catch (Exception e)
+            {
+
+                throw new ExceptionConnection("Problem z ustleniem adresu hosta " + e.Message);
+            }
+            try
+            {
+                client = new MqttClient(ipAddress, getPort(ip), false, null, null, MqttSslProtocols.None);
                 client.MqttMsgPublishReceived += client_MqttMsgPublishReceived;
 
-                string clientId = Configuration.myName;
                 try
                 {
-                    if (chkboxLogin.IsChecked == true)
-                        client.Connect(clientId, Configuration.clientId, Configuration.clientPass);
+                    if (chkboxLoginIsChecked == true)
+                        client.Connect(uID, clientId, clientPass);
                     else
-                        client.Connect(clientId);
+                        client.Connect(uID);
                 }
-                catch (Exception x)
+                catch (Exception e)
                 {
-                    MessageBox.Show(x.Message);
-                    return;
-                    throw;
+                    throw new ExceptionConnection("Wystąpił problem z połączeniem - " + e.Message);
                 }
-                client.Subscribe(new string[] { Configuration.topic.ToString() }, new byte[] { MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE });
+                client.Subscribe(new string[] { topic.ToString() }, new byte[] { MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE });
             }
-            catch (Exception x)
+            catch (ExceptionConnection ex)
             {
-          
-                return;
+                throw new ExceptionConnection(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                throw new ExceptionConnection(ex.Message);
             }
         }
+
+        /// <summary>
+        /// It activate when the MQTT receives a message.
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        /// <exception cref="ExceptionConnection">Thrown when something wrong with connection.</exception>
+        /// <exception cref="ExceptionBadFormat">Thrown when the message is of unknown format.</exception>
         void client_MqttMsgPublishReceived(object sender, MqttMsgPublishEventArgs e)
         {
-            if (this.newSession == true) {
+            _=dasd(e.Message);
+        }
+
+        public async Task dasd(byte[] message) 
+        {
+
+            if (this.newSession == true)
+            {
                 this.newSession = false;
             }
-            string payload = Encoding.UTF8.GetString(e.Message);
-            string typeMsg = payload.Substring(0, 3);
-            payload = payload.Remove(0, 3);
-
-
-            if (typeMsg == "wro")
+            try
             {
-                Dispatcher.Invoke(delegate
+                string payload = Encoding.UTF8.GetString(message);
+                var deserializedMsg = JsonConvert.DeserializeObject<Msg>(payload);
+                switch (deserializedMsg.type)
                 {
-                     tryWriting();
-                });
+                    case "wro":
+                        Dispatcher.Invoke(delegate
+                        {
+                            tryWriting(deserializedMsg.uID);
+                        });
+                        break;
+                    case "wrs":
+                        typingCancle(deserializedMsg.uID);
+                        break;
+                    case "msg":
+                        typingCancle(deserializedMsg.uID);
+                        Dispatcher.Invoke(delegate
+                        {
+                            this.addMessage(new Message(deserializedMsg.data, deserializedMsg.topic, deserializedMsg.name, deserializedMsg.uID));
+                            scrollViewer.ScrollToEnd();
+                        });
+                        break;
+                    default:
+                        throw new ExceptionConnection("Nieznany typ odebranej wiadomości: " + deserializedMsg.type);
+                }
             }
-            else if (typeMsg == "wrs")
+            catch (ExceptionConnection ex)
             {
-                 taskCancle();
+                showError(ex.Message);
+                throw new ExceptionConnection(ex.Message);
             }
-            else if (typeMsg == "msg")
+            catch (Exception ex)
             {
-                    var deserializedMsg = JsonConvert.DeserializeObject<Msg>(payload);
-
-                    taskCancle();
-
-                    Dispatcher.Invoke(delegate
-                    {
-                        this.addMessageToGrid(new Message(deserializedMsg.data, deserializedMsg.topic, deserializedMsg.myName));
-                        scrollViewer.ScrollToEnd();
-                    });
+                showError("Nieznany format wiadomości:\n     " + ex.Message);
+                throw new ExceptionBadFormat(ex.Message);
             }
-
         }
+
 
         private void btnSend_Click(object sender, RoutedEventArgs e)
         {
-            _ = sendMsgPre();
-        }
-
-
-        private void changeMarginTyping(bool[] toUp, Ellipse[] elipseTab)
-        {
-
-            for (int i = 0; i < 3; i++)
+            try
             {
-                if (toUp[i] == false)
-                {
-                    if (elipseTab[i].Margin.Bottom == 1)
-                    {
-                        toUp[i] = true;
-                        elipseTab[i].Margin = new Thickness(0, 0, 0, 2);
-                    }
-                    elipseTab[i].Margin = new Thickness(0, 0, 0, elipseTab[i].Margin.Bottom - 1);
-                }
-                else
-                {
-                    if (elipseTab[i].Margin.Bottom == 8)
-                    {
-                        toUp[i] = false;
-                        elipseTab[i].Margin = new Thickness(0, 0, 0, 7);
-                    }
-                    elipseTab[i].Margin = new Thickness(0, 0, 0, elipseTab[i].Margin.Bottom + 1);
-                }
-
+                _ = sendMsgPre(client, Configuration.topic);
+                tbxMessage.Text = "";
             }
-
-
+            catch (Exception ex)
+            {
+                showError(ex.Message);
+            }
         }
 
         private void OnKeyDownHandler(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Return)
             {
-                _ = sendMsgPre();
+                try
+                {
+                    _ = sendMsgPre(client,Configuration.topic);
+                    tbxMessage.Text = "";
+                }
+                catch (Exception ex)
+                {
+                    showError(ex.Message);
+                }
+
             }
         }
 
@@ -173,41 +222,13 @@ namespace MessengerMQTT
 
         }
 
-        private async Task sendMsgPre(string type = "msg")
-        {
-
-            if (type == "wro" && tbxMessage.Text.Trim() != "")
-            {
-                string msg = "wro" + Configuration.myName;
-                await sendMsg(msg);
-            }
-            else if (type == "wrs")
-            {
-                string msg = "wrs" + Configuration.myName;
-                await sendMsg(msg);
-            }
-            else if (type == "msg")
-            {
-                if (tbxMessage.Text.Trim() != "")
-                {
-                    Msg obj = new Msg(tbxMessage.Text, Configuration.topic, Configuration.myName);
-                    string msg = "msg" + JsonConvert.SerializeObject(obj);
-
-                    await sendMsg(msg);
-
-                    tbxMessage.Text = "";
-                }
-            }
-        }
 
         private void chkboxLogin_Checked(object sender, RoutedEventArgs e)
         {
             if (chkboxLogin.IsChecked.Value == true)
             {
-
                 tbxLogin.IsEnabled = true;
                 passbxPass.IsEnabled = true;
-
             }
 
         }
@@ -256,36 +277,6 @@ namespace MessengerMQTT
 
         }
 
-        private async Task resubscribeAsync()
-        {
-            var a = newSession;
-            if (this.newSession == false)
-            {
-                try
-                {
-                    Console.WriteLine("### DISCONNECT ###");
-                    client.Unsubscribe(new string[] { Configuration.topicLast });
-                    client.Disconnect();
-                    Console.WriteLine("### UNSUBSCRIBED ###");
-
-                }
-                catch (Exception)
-                {
-                }
-                try
-                {
-                    this.newSession = true;
-                    await MQTT();
-                }
-                catch (Exception)
-                {
-
-                    throw;
-                }
-            }
-
-        }
-
         private void btnRConn_Click(object sender, RoutedEventArgs e)
         {
             _ = resubscribeAsync();
@@ -316,44 +307,92 @@ namespace MessengerMQTT
             }
         }
 
-        private void taskCancle()
+        private void typingCancle(string name)
         {
-
-            if (haveTypingMessage == true)
+            if ((typingGestAndMe[1] > -10 && name == Configuration.uID) || (typingGestAndMe[0] > -10 && name != Configuration.uID))
             {
-                cts.Cancel();
-                haveTypingMessage = false;
+                if (name == Configuration.uID)
+                    ctsMe.Cancel();
+                else
+                    cts.Cancel();
             }
         }
 
         private void tbxMessage_TextChanged(object sender, TextChangedEventArgs e)
         {
-            if (tbxMessage.Text.Trim() != "" && haveTypingMessage == false)
-                _ = sendMsgPre("wro");
-            else if (tbxMessage.Text.Trim() == "" && haveTypingMessage == true)
+            if (tbxMessage.Text.Trim() != "" && typingGestAndMe[1] == -10)
+                _ = sendMsgPre(client, Configuration.topic, "wro");
+            else if (tbxMessage.Text.Trim() == "" && typingGestAndMe[1] > -10)
             {
-                _ = sendMsgPre("wrs");
+                _ = sendMsgPre(client, Configuration.topic, "wrs");
             }
 
         }
-        private async Task sendMsg(string msg)
+
+        /// <summary>
+        /// Checking before sending what type of message it is and it convert msg to json format 
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        /// <exception cref="ExceptionSendingProblem">Thrown when something wrong with sending message.</exception>
+        /// <exception cref="ExceptionBadFormat">Thrown when the message is of bad format.</exception>
+        private async Task sendMsgPre(MqttClient mqttClient, string topic = "", string type = "msg")
+        {
+            if (type == "wro" && tbxMessage.Text.Trim() == "") return;
+
+            Msg msgReadyToConvert;
+            if (type != "msg")
+                msgReadyToConvert = new Msg(type, "", Configuration.topic, Configuration.name, Configuration.uID);
+            else
+                msgReadyToConvert = new Msg(type, tbxMessage.Text, Configuration.topic, Configuration.name, Configuration.uID);
+
+            try
+            {
+                string msg = JsonConvert.SerializeObject(msgReadyToConvert);
+
+                try
+                {
+                    await sendMsg(msg, topic, mqttClient);
+                }
+                catch (Exception ex)
+                {
+
+                    throw new ExceptionSendingProblem("Problem z wysłaniem wiadomości: "+ ex.Message);
+                }
+            }
+            catch (Exception e)
+            {
+                throw new ExceptionBadFormat("Błąd podczas konwersji" + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// Sending message via MQTT
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        /// <exception cref="ExceptionSendingProblem">Thrown when something wrong with sending message.</exception>
+        /// <exception cref="ExceptionBadFormat">Thrown when the message is of bad format.</exception>
+        private async Task sendMsg(string msg, string topic, MqttClient mqttClient)
         {
             string strValue = Convert.ToString(msg);
-            if (client.IsConnected)
+            if (mqttClient.IsConnected)
             {
-                client.Publish(Configuration.topic, Encoding.UTF8.GetBytes(strValue));
+                mqttClient.Publish(topic, Encoding.UTF8.GetBytes(strValue));
             }
-            
+
         }
-        public void addMessageToGrid(Message message)
+        public void addMessage(Message message)
         {
-            MainWindow.listRows.Add(new RowDefinition());
-            gridMessages.RowDefinitions.Add(MainWindow.listRows[listRows.Count - 1]);
+            MainWindow.listRowsMessages.Add(new RowDefinition());
+            gridMessages.RowDefinitions.Add(MainWindow.listRowsMessages[listRowsMessages.Count - 1]);
             this.playSound();
 
             TextBlock textBlock = new TextBlock();
 
-            textBlock.Text = $" {message.myName}: {message.getMessage()}";
+            textBlock.Text = $"{message.name}: {message.getMessage()}";
             textBlock.FontSize = 20;
             textBlock.Margin = new Thickness(5, 2, 5, 2);
             textBlock.TextWrapping = TextWrapping.Wrap;
@@ -366,11 +405,16 @@ namespace MessengerMQTT
 
             border.MaxWidth = WindowMain.Width * 0.6;
             border.VerticalAlignment = System.Windows.VerticalAlignment.Top;
-            if (message.myName == Configuration.myName)
+            if (message.uID == Configuration.uID)
             {
-                border.Background = (Brush)new BrushConverter().ConvertFrom("#3498db");
-                border.HorizontalAlignment = System.Windows.HorizontalAlignment.Right;
-                textBlock.HorizontalAlignment = System.Windows.HorizontalAlignment.Right;
+                try
+                {
+                    changeStylesIfItsMe(border, textBlock, message.type);
+                }
+                catch (ExceptionEditStyle e)
+                {
+                    showError(e.Message);
+                }
             }
             else
             {
@@ -385,61 +429,198 @@ namespace MessengerMQTT
             gridMessages.Children.Add(border);
         }
 
-        private void tryWriting()
+        /// <summary>
+        /// Changes color and site of message
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        /// <exception cref="ExceptionEditStyle">Thrown when something wrong with sending message.</exception>
+        private void changeStylesIfItsMe(Border border, TextBlock textBlock, string type)
         {
-            if (haveTypingMessage == true) return;
-            MainWindow.listRows.Add(new RowDefinition());
-            gridMessages.RowDefinitions.Add(MainWindow.listRows[listRows.Count - 1]);
-            Border border = new Border();
-            listBorder.Add(border);
-            border.CornerRadius = new CornerRadius(5);
-            border.Width = 50;
-            border.Height = 20;
-            border.VerticalAlignment = System.Windows.VerticalAlignment.Top;
-            border.Background = (Brush)new BrushConverter().ConvertFrom("#bdc3c7");
-            border.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
-            Grid.SetRow(border, Message.getSize());
-            gridMessages.Children.Add(border);
-            Grid gridTyping = new Grid();
-            gridTyping.HorizontalAlignment = HorizontalAlignment.Stretch;
-            gridTyping.VerticalAlignment = VerticalAlignment.Stretch;
-            gridTyping.ColumnDefinitions.Add(new ColumnDefinition());
-            gridTyping.ColumnDefinitions.Add(new ColumnDefinition());
-            gridTyping.ColumnDefinitions.Add(new ColumnDefinition());
-            border.Child = gridTyping;
-
-
-            Ellipse[] elipseTab = new Ellipse[3];
-            for (int i = 0; i < 3; i++)
+            try
             {
-                elipseTab[i] = new Ellipse();
-                elipseTab[i].Fill = (Brush)new BrushConverter().ConvertFrom("#FFF4F4F5");
-                elipseTab[i].HorizontalAlignment = HorizontalAlignment.Center;
-                elipseTab[i].Height = 11;
-                elipseTab[i].Width = 11;
-                switch (i)
+                border.Background = (Brush)new BrushConverter().ConvertFrom("#3498db");
+                border.HorizontalAlignment = System.Windows.HorizontalAlignment.Right;
+                switch (type)
                 {
-                    case 0:
-                        elipseTab[0].Margin = new Thickness(0, 0, 0, 1);
+                    case "msg":
+                        textBlock.HorizontalAlignment = System.Windows.HorizontalAlignment.Right;
                         break;
-                    case 1:
-                        elipseTab[1].Margin = new Thickness(0, 0, 0, 4);
+                    case "wro":
                         break;
-                    case 2:
-                        elipseTab[2].Margin = new Thickness(0, 0, 0, 7);
+                    default:
                         break;
                 }
-                elipseTab[i].VerticalAlignment = VerticalAlignment.Bottom;
-                Grid.SetColumn(elipseTab[i], i);
-                Grid.SetRow(elipseTab[i], 0);
-                gridTyping.Children.Add(elipseTab[i]);
             }
-
-            haveTypingMessage = true;
-            cts = new CancellationTokenSource();
-            Task.Run(() => refreshTyping(elipseTab, border), cts.Token);
+            catch (Exception e)
+            {
+                throw new ExceptionEditStyle("Problem z zmienieniem dymku na wysłany od użytkownika aplikacji:" + e.Message);
+            }
         }
 
+
+        /// <summary>
+        /// Shows typing 
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        /// <exception cref="ExceptionEditStyle">Thrown when something wrong with sending message.</exception>
+        private void tryWriting(string uID)
+        {
+            
+
+                if ((typingGestAndMe[1] != -10 && uID == Configuration.uID) || (typingGestAndMe[0] != -10 && uID != Configuration.uID)) return;
+                MainWindow.listRowsMessages.Add(new RowDefinition());
+                gridMessages.RowDefinitions.Add(MainWindow.listRowsMessages[listRowsMessages.Count - 1]);
+                Border border = new Border();
+                listBorder.Add(border);
+                border.CornerRadius = new CornerRadius(5);
+                border.Width = 50;
+                border.Height = 20;
+                border.VerticalAlignment = System.Windows.VerticalAlignment.Top;
+
+                if (uID == Configuration.uID)
+                {
+                    typingGestAndMe[1] = MainWindow.listRowsMessages.Count - 1;
+                    changeStylesIfItsMe(border, null, "wro");
+                }
+                else
+                {
+                    typingGestAndMe[0] = MainWindow.listRowsMessages.Count - 1;
+                    border.Background = (Brush)new BrushConverter().ConvertFrom("#bdc3c7");
+                    border.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
+                }
+                Grid.SetRow(border, Message.getSize());
+                gridMessages.Children.Add(border);
+                Ellipse[] elipseTab = new Ellipse[3];
+                Grid gridTyping = new Grid();
+                gridTyping.HorizontalAlignment = HorizontalAlignment.Stretch;
+                gridTyping.VerticalAlignment = VerticalAlignment.Stretch;
+                gridTyping.ColumnDefinitions.Add(new ColumnDefinition());
+                gridTyping.ColumnDefinitions.Add(new ColumnDefinition());
+                gridTyping.ColumnDefinitions.Add(new ColumnDefinition());
+                border.Child = gridTyping;
+
+                
+                startElipseToTyping(elipseTab, gridTyping);
+
+
+
+            if (uID == Configuration.uID)
+            {
+                ctsMe = new CancellationTokenSource();
+                Task.Run(() => refreshTyping(elipseTab, border), ctsMe.Token);
+            }
+            else
+            {
+                cts = new CancellationTokenSource();
+                Task.Run(() => refreshTyping(elipseTab, border), cts.Token);
+            }
+
+        }
+
+
+        /// <summary>
+        /// Show the ellipses that writing effect
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        /// <exception cref="ExceptionEditStyle">Thrown when something wrong with sending message.</exception>
+        private async Task startElipseToTyping(Ellipse[] elipseTab, Grid gridTyping)
+        {
+            try
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    elipseTab[i] = new Ellipse();
+                    elipseTab[i].Fill = (Brush)new BrushConverter().ConvertFrom("#FFF4F4F5");
+                    elipseTab[i].HorizontalAlignment = HorizontalAlignment.Center;
+                    elipseTab[i].Height = 11;
+                    elipseTab[i].Width = 11;
+                    switch (i)
+                    {
+                        case 0:
+                            elipseTab[0].Margin = new Thickness(0, 0, 0, 1);
+                            break;
+                        case 1:
+                            elipseTab[1].Margin = new Thickness(0, 0, 0, 4);
+                            break;
+                        case 2:
+                            elipseTab[2].Margin = new Thickness(0, 0, 0, 7);
+                            break;
+                    }
+                    elipseTab[i].VerticalAlignment = VerticalAlignment.Bottom;
+                    Grid.SetColumn(elipseTab[i], i);
+                    Grid.SetRow(elipseTab[i], 0);
+                    gridTyping.Children.Add(elipseTab[i]);
+                }
+            }
+            catch (Exception e)
+            {
+
+                throw new ExceptionEditStyle("Błąd podczas ruszania elipsami : " + e);
+            }
+        }
+        private void changeMarginTyping(bool[] toUp, Ellipse[] elipseTab)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                if (toUp[i] == false)
+                {
+                    if (elipseTab[i].Margin.Bottom == 1)
+                    {
+                        toUp[i] = true;
+                        elipseTab[i].Margin = new Thickness(0, 0, 0, 2);
+                    }
+                    elipseTab[i].Margin = new Thickness(0, 0, 0, elipseTab[i].Margin.Bottom - 1);
+                }
+                else
+                {
+                    if (elipseTab[i].Margin.Bottom == 8)
+                    {
+                        toUp[i] = false;
+                        elipseTab[i].Margin = new Thickness(0, 0, 0, 7);
+                    }
+                    elipseTab[i].Margin = new Thickness(0, 0, 0, elipseTab[i].Margin.Bottom + 1);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Resubscribe MQTT
+        /// </summary>
+        /// <returns>
+        /// Nothing
+        /// </returns>
+        private async Task resubscribeAsync()
+        {
+            var a = newSession;
+            if (this.newSession == false)
+            {
+                try
+                {
+                    client.Unsubscribe(new string[] { Configuration.topicLast });
+                    client.Disconnect();
+                }
+                catch (Exception e)
+                {
+                    showError(e.Message);
+                }
+                try
+                {
+                    this.newSession = true;
+                    await MQTT(Configuration.ip, Configuration.uID, Configuration.topic, chkboxLogin.IsChecked, Configuration.clientId, Configuration.clientPass);
+                }
+                catch (Exception e)
+                {
+                    showError(e.Message);
+                }
+            }
+
+        }
         private async Task refreshTyping(Ellipse[] elipseTab, Border border)
         {
             bool[] toUp = new bool[3];
@@ -449,16 +630,44 @@ namespace MessengerMQTT
             while (true)
             {
 
-                if (cts.Token.IsCancellationRequested)
+                if (cts.Token.IsCancellationRequested && typingGestAndMe[0] > -10)
                 {
-                    Dispatcher.Invoke(delegate
+                    try
+                    {
+                        Dispatcher.Invoke(delegate
+                        {
+                            this.gridMessages.Children.Remove(border);
+                            this.gridMessages.RowDefinitions.Remove(MainWindow.listRowsMessages[typingGestAndMe[0]]);
+                            MainWindow.listRowsMessages.RemoveAt(typingGestAndMe[0]);
+                            typingGestAndMe[0] = -10;
+                        });
+                    }
+                    catch (Exception x)
                     {
 
-                        this.gridMessages.Children.Remove(border);
-                        this.gridMessages.RowDefinitions.Remove(MainWindow.listRows[listRows.Count - 1]);
-                        MainWindow.listRows.RemoveAt(listRows.Count - 1);
-                        haveTypingMessage = false;
-                    });
+                        showError("Błąd podczas anulowania procesu pisania przez kogoś innego" + x.Message);
+                    }
+                    return;
+
+                }
+                if (ctsMe.Token.IsCancellationRequested && typingGestAndMe[1] > -10)
+                {
+
+                    try
+                    {
+                        Dispatcher.Invoke(delegate
+                        {
+                            this.gridMessages.Children.Remove(border);
+                            this.gridMessages.RowDefinitions.Remove(MainWindow.listRowsMessages[typingGestAndMe[1]]);
+                            MainWindow.listRowsMessages.RemoveAt(typingGestAndMe[1]);
+                            typingGestAndMe[1] = -10;
+                        });
+                    }
+                    catch (Exception x)
+                    {
+
+                        showError("Błąd podczas anulowania procesu pisania przez ciebie" + x.Message);
+                    }
                     return;
                 }
                 Dispatcher.Invoke(delegate
@@ -466,23 +675,26 @@ namespace MessengerMQTT
                     changeMarginTyping(toUp, elipseTab);
                 });
                 await Task.Delay(50);
-
             }
-
-
         }
-        private int getPort(string ip) {
+        private int getPort(string ip)
+        {
             for (int i = 0; i < ip.Length; i++)
             {
                 if (ip[i] == ':')
                 {
                     int port = 1883;
-                    int.TryParse(ip.Substring(i+1), out port);
+                    try
+                    {
+                        int.TryParse(ip.Substring(i + 1), out port);
+                    }
+                    catch (Exception e)
+                    {
+                        showError(e.Message);
+                    }
                     return port;
                 }
-
             }
-
             return 1883;
         }
         private string getIp(string ip)
@@ -497,7 +709,6 @@ namespace MessengerMQTT
                 }
 
             }
-
             return Configuration.ip;
         }
         private void WindowMain_Closing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -520,7 +731,7 @@ namespace MessengerMQTT
         {
             if (tbxNick.Text.Trim() != "")
             {
-                Configuration.myName = tbxNick.Text.Trim();
+                Configuration.name = tbxNick.Text.Trim();
             }
         }
 
@@ -533,5 +744,68 @@ namespace MessengerMQTT
                 _ = resubscribeAsync();
             }
         }
+
+        private void showError(string errorMsg)
+        {
+            Dispatcher.Invoke(delegate
+            {
+                addNewError(errorMsg);
+            });
+
+        }
+        private void addNewError(string errorMsg) {
+
+            listRowsErrors.Add(new RowDefinition());
+            gridError.RowDefinitions.Add(listRowsErrors[listRowsErrors.Count - 1]);
+
+            TextBlock textBlock = new TextBlock();
+            textBlock.Text = errorMsg;
+            textBlock.FontSize = 10;
+            textBlock.Padding = new Thickness(5, 2, 5, 2);
+            textBlock.Background = (Brush)new BrushConverter().ConvertFrom("#f44336");
+            textBlock.TextWrapping = TextWrapping.Wrap;
+            textBlock.HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch;
+            textBlock.Name = ("tbxError_" + (listRowsErrors.Count - 1).ToString());
+            Grid.SetRow(textBlock, listRowsErrors.Count - 1);
+            gridError.Children.Add(textBlock);
+        }
+        private void gridError_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            try
+            {
+                gridError.Children.RemoveAt(0);
+                listRowsErrors.RemoveAt(0);
+            }
+            catch (Exception x)
+            {
+                showError(x.Message);
+            }
+        }
     }
+
+    class ExceptionEditStyle : Exception
+    {
+        public ExceptionEditStyle(string message) : base(message)
+        {
+        }
+    }
+    class ExceptionConnection : Exception
+    {
+        public ExceptionConnection(string message) : base(message)
+        {
+        }
+    }
+    class ExceptionBadFormat : Exception
+    {
+        public ExceptionBadFormat(string message) : base(message)
+        {
+        }
+    }
+    class ExceptionSendingProblem : Exception
+    {
+        public ExceptionSendingProblem(string message) : base(message)
+        {
+        }
+    }
+
 }
